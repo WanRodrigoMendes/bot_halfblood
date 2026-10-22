@@ -26,6 +26,10 @@ COMMAND_DETAILS = {
         "",
         "-# > Faz uma mineração, limitada a duas tentativas por dia em cada servidor.",
     ),
+    "minerar-pedras-preciosas": (
+        "",
+        "-# > Busca pedras preciosas, limitada a duas tentativas por dia em cada servidor.",
+    ),
     "expedicao": (
         "<npc [adicionar | remover] | objetivo | objetivos | contratar | status>",
         "-# > Mod/ADM cadastra objetivos e recompensas; jogadores contratam até três NPCs. "

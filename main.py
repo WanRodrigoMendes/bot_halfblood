@@ -16,6 +16,7 @@ class UtilityBot(commands.Bot):
         await self.load_extension("cogs.materiais")
         await self.load_extension("cogs.pq")
         await self.load_extension("cogs.minerar")
+        await self.load_extension("cogs.minerar_pedras_preciosas")
         await self.load_extension("cogs.expedicoes")
         await self.load_extension("cogs.investimentos")
 

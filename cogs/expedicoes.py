@@ -33,10 +33,12 @@ class UnbelievaBoatAPIError(RuntimeError):
         message: str,
         cobranca_incerta: bool = False,
         status_code: int | None = None,
+        sem_acesso: bool = False,
     ) -> None:
         super().__init__(message)
         self.cobranca_incerta = cobranca_incerta
         self.status_code = status_code
+        self.sem_acesso = sem_acesso
 
 
 class SaldoInsuficienteError(RuntimeError):
@@ -53,7 +55,8 @@ async def obter_saldo_unbelievaboat(
     token = os.getenv("UNBELIEVABOAT_API_TOKEN")
     if not token:
         raise UnbelievaBoatAPIError(
-            "Configure UNBELIEVABOAT_API_TOKEN no ambiente do bot."
+            "Configure UNBELIEVABOAT_API_TOKEN no ambiente do bot.",
+            sem_acesso=True,
         )
 
     url = f"{UNBELIEVABOAT_API}/guilds/{servidor_id}/users/{usuario_id}"
@@ -69,12 +72,13 @@ async def obter_saldo_unbelievaboat(
                     detalhe = (
                         " Verifique se a aplicação do token está autorizada neste "
                         "servidor e possui permissão de Economy."
-                        if resposta.status == 403
+                        if resposta.status in (401, 403)
                         else ""
                     )
                     raise UnbelievaBoatAPIError(
                         f"Consulta de saldo retornou HTTP {resposta.status}.{detalhe}",
                         status_code=resposta.status,
+                        sem_acesso=resposta.status in (401, 403),
                     )
                 dados = await resposta.json()
     except UnbelievaBoatAPIError:
@@ -110,7 +114,8 @@ async def atualizar_saldo_unbelievaboat(
     token = os.getenv("UNBELIEVABOAT_API_TOKEN")
     if not token:
         raise UnbelievaBoatAPIError(
-            "Configure UNBELIEVABOAT_API_TOKEN no ambiente do bot."
+            "Configure UNBELIEVABOAT_API_TOKEN no ambiente do bot.",
+            sem_acesso=True,
         )
 
     url = f"{UNBELIEVABOAT_API}/guilds/{servidor_id}/users/{usuario_id}"
@@ -127,13 +132,14 @@ async def atualizar_saldo_unbelievaboat(
                     detalhe = (
                         " Verifique se a aplicação do token está autorizada neste "
                         "servidor e possui permissão de Economy."
-                        if resposta.status == 403
+                        if resposta.status in (401, 403)
                         else ""
                     )
                     raise UnbelievaBoatAPIError(
                         f"Atualização de saldo retornou HTTP {resposta.status}.{detalhe}",
                         cobranca_incerta=resposta.status >= 500,
                         status_code=resposta.status,
+                        sem_acesso=resposta.status in (401, 403),
                     )
     except UnbelievaBoatAPIError:
         raise
@@ -246,6 +252,7 @@ def inicializar_banco() -> None:
             CREATE TABLE IF NOT EXISTS expedicao_viagens (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 servidor_id INTEGER NOT NULL,
+                numero INTEGER NOT NULL,
                 contratante_id INTEGER NOT NULL,
                 canal_id INTEGER NOT NULL,
                 objetivo_nome TEXT NOT NULL,
@@ -254,8 +261,14 @@ def inicializar_banco() -> None:
                 termina_em REAL NOT NULL,
                 custo INTEGER NOT NULL,
                 chance_sucesso INTEGER NOT NULL,
+                duracao_segundos INTEGER NOT NULL DEFAULT 0,
+                manual_pendente INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'ativa'
                     CHECK (status IN ('ativa', 'sucesso', 'fracasso'))
+            );
+            CREATE TABLE IF NOT EXISTS expedicao_sequencias (
+                    servidor_id INTEGER PRIMARY KEY,
+                    ultimo_numero INTEGER NOT NULL
             );
             CREATE UNIQUE INDEX IF NOT EXISTS uma_viagem_ativa_por_contratante
                 ON expedicao_viagens (servidor_id, contratante_id)
@@ -286,6 +299,75 @@ def inicializar_banco() -> None:
             );
             """
         )
+        colunas_viagens = {
+            linha[1]
+            for linha in banco.execute("PRAGMA table_info(expedicao_viagens)")
+        }
+        if "numero" not in colunas_viagens:
+            banco.execute("ALTER TABLE expedicao_viagens ADD COLUMN numero INTEGER")
+        servidores_com_viagens = banco.execute(
+            """
+            SELECT DISTINCT servidor_id FROM expedicao_viagens
+            WHERE numero IS NULL ORDER BY servidor_id
+            """
+        ).fetchall()
+        for (servidor_id,) in servidores_com_viagens:
+            ultimo_numero = banco.execute(
+                """
+                SELECT COALESCE(MAX(numero), 0) FROM expedicao_viagens
+                WHERE servidor_id = ?
+                """,
+                (servidor_id,),
+            ).fetchone()[0]
+            viagens_sem_numero = banco.execute(
+                """
+                SELECT id FROM expedicao_viagens
+                WHERE servidor_id = ? AND numero IS NULL ORDER BY id
+                """,
+                (servidor_id,),
+            ).fetchall()
+            for numero, (viagem_id,) in enumerate(
+                viagens_sem_numero, start=ultimo_numero + 1
+            ):
+                banco.execute(
+                    "UPDATE expedicao_viagens SET numero = ? WHERE id = ?",
+                    (numero, viagem_id),
+                )
+        banco.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS numero_viagem_por_servidor
+            ON expedicao_viagens (servidor_id, numero)
+            """
+        )
+        sequencias_existentes = banco.execute(
+            """
+            SELECT servidor_id, MAX(numero)
+            FROM expedicao_viagens
+            GROUP BY servidor_id
+            """
+        ).fetchall()
+        for servidor_id, ultimo_numero in sequencias_existentes:
+            banco.execute(
+                """
+                INSERT INTO expedicao_sequencias (servidor_id, ultimo_numero)
+                VALUES (?, ?)
+                ON CONFLICT (servidor_id)
+                DO UPDATE SET ultimo_numero = MAX(
+                    ultimo_numero, excluded.ultimo_numero
+                )
+                """,
+                (servidor_id, ultimo_numero),
+            )
+        if "duracao_segundos" not in colunas_viagens:
+            banco.execute(
+                "ALTER TABLE expedicao_viagens "
+                "ADD COLUMN duracao_segundos INTEGER NOT NULL DEFAULT 0"
+            )
+        if "manual_pendente" not in colunas_viagens:
+            banco.execute(
+                "ALTER TABLE expedicao_viagens "
+                "ADD COLUMN manual_pendente INTEGER NOT NULL DEFAULT 0"
+            )
         colunas = {
             linha[1]
             for linha in banco.execute("PRAGMA table_info(expedicao_mercenarios)")
@@ -556,7 +638,10 @@ class ContratarExpedicaoView(discord.ui.View):
                 inline=False,
             )
         embed.set_footer(
-            text="O custo é cobrado do UnbelievaBoat ao confirmar (cash antes do bank)."
+            text=(
+                "O custo é cobrado pela API; sem acesso, a expedição aguarda cobrança "
+                "manual e aprovação da moderação."
+            )
         )
         return embed
 
@@ -603,12 +688,12 @@ class ContratarExpedicaoView(discord.ui.View):
             )
             return
 
-        viagem_id, termina_em, custo, chance = resultado[1:]
+        viagem_id, numero_viagem, termina_em, custo, chance = resultado[1:]
         try:
             await self.cog.cobrar_expedicao(
                 servidor_id=self.servidor_id,
                 contratante_id=self.autor_id,
-                viagem_id=viagem_id,
+                viagem_id=numero_viagem,
                 custo=custo,
             )
         except SaldoInsuficienteError as erro:
@@ -639,6 +724,50 @@ class ContratarExpedicaoView(discord.ui.View):
                 self.autor_id,
                 erro,
             )
+            if erro.sem_acesso:
+                try:
+                    self.cog.marcar_viagem_pendente_manual(viagem_id)
+                except sqlite3.Error:
+                    logger.exception(
+                        "Não foi possível marcar a expedição %s para cobrança manual.",
+                        viagem_id,
+                    )
+                    try:
+                        self.cog.cancelar_viagem_sem_cobranca(viagem_id)
+                    except sqlite3.Error:
+                        logger.exception(
+                            "Não foi possível cancelar a expedição %s após falha "
+                            "ao registrar a cobrança manual.",
+                            viagem_id,
+                        )
+                        await interaction.response.send_message(
+                            "A cobrança não foi validada e houve uma falha ao registrar "
+                            "ou cancelar a expedição. Avise a moderação antes de tentar "
+                            "novamente.",
+                            ephemeral=True,
+                        )
+                        return
+                    await interaction.response.send_message(
+                        "A integração monetária está sem acesso e não foi possível "
+                        "registrar a solicitação manual. A expedição foi cancelada.",
+                        ephemeral=True,
+                    )
+                    return
+
+                self.stop()
+                await interaction.response.edit_message(
+                    content=(
+                        f"Expedição **#{numero_viagem}** aguardando aprovação da moderação. "
+                        f"A cobrança de **{custo} "
+                        f"{obter_nome_moeda(self.servidor_id)}** deve ser feita "
+                        "manualmente no UnbelievaBoat antes de um mod/ADM usar "
+                        f"`!expedicao aprovar {numero_viagem}`. A duração só começa após "
+                        "a aprovação."
+                    ),
+                    embed=None,
+                    view=None,
+                )
+                return
             try:
                 self.cog.cancelar_viagem_sem_cobranca(viagem_id)
             except sqlite3.Error:
@@ -676,7 +805,7 @@ class ContratarExpedicaoView(discord.ui.View):
         moeda = obter_nome_moeda(self.servidor_id)
         await interaction.response.edit_message(
             content=(
-                f"Expedição **#{viagem_id}** contratada. **{custo} {moeda}** "
+                f"Expedição **#{numero_viagem}** contratada. **{custo} {moeda}** "
                 f"foram cobrados do UnbelievaBoat. Chance de sucesso: **{chance}%**. "
                 f"Retorno previsto: <t:{int(termina_em)}:R>."
             ),
@@ -725,6 +854,21 @@ class ExpedicoesCog(commands.Cog):
             bank=-debito_bank,
             motivo=f"Contratação da expedição #{viagem_id}",
         )
+
+    def marcar_viagem_pendente_manual(self, viagem_id: int) -> None:
+        with conectar_banco() as banco:
+            cursor = banco.execute(
+                """
+                UPDATE expedicao_viagens
+                SET manual_pendente = 1
+                WHERE id = ? AND status = 'ativa' AND manual_pendente = 0
+                """,
+                (viagem_id,),
+            )
+            if cursor.rowcount != 1:
+                raise sqlite3.Error(
+                    f"A expedição {viagem_id} não está disponível para cobrança manual."
+                )
 
     def cancelar_viagem_sem_cobranca(self, viagem_id: int) -> None:
         with conectar_banco() as banco:
@@ -781,7 +925,10 @@ class ExpedicoesCog(commands.Cog):
         agora = datetime.now(timezone.utc).timestamp()
         with conectar_banco() as banco:
             ids = banco.execute(
-                "SELECT id FROM expedicao_viagens WHERE status = 'ativa' AND termina_em <= ?",
+                """
+                SELECT id FROM expedicao_viagens
+                WHERE status = 'ativa' AND manual_pendente = 0 AND termina_em <= ?
+                """,
                 (agora,),
             ).fetchall()
         for (viagem_id,) in ids:
@@ -836,6 +983,25 @@ class ExpedicoesCog(commands.Cog):
                 banco.rollback()
                 return ("indisponivel",)
 
+            numero_viagem = banco.execute(
+                """
+                SELECT COALESCE(
+                    (SELECT ultimo_numero FROM expedicao_sequencias
+                     WHERE servidor_id = ?),
+                    0
+                ) + 1
+                """,
+                (servidor_id,),
+            ).fetchone()[0]
+            banco.execute(
+                """
+                INSERT INTO expedicao_sequencias (servidor_id, ultimo_numero)
+                VALUES (?, ?)
+                ON CONFLICT (servidor_id)
+                DO UPDATE SET ultimo_numero = excluded.ultimo_numero
+                """,
+                (servidor_id, numero_viagem),
+            )
             poder = sum(npc["combate"] for npc in equipe)
             exploracao = sum(npc["exploracao"] for npc in equipe)
             custo = calcular_custo(equipe)
@@ -849,12 +1015,14 @@ class ExpedicoesCog(commands.Cog):
             cursor = banco.execute(
                 """
                 INSERT INTO expedicao_viagens
-                    (servidor_id, contratante_id, canal_id, objetivo_nome,
-                     dificuldade, recompensa, termina_em, custo, chance_sucesso)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (servidor_id, numero, contratante_id, canal_id, objetivo_nome,
+                    dificuldade, recompensa, termina_em, custo, chance_sucesso,
+                    duracao_segundos)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     servidor_id,
+                    numero_viagem,
                     contratante_id,
                     canal_id,
                     objetivo["nome"],
@@ -863,6 +1031,7 @@ class ExpedicoesCog(commands.Cog):
                     termina_em,
                     custo,
                     chance,
+                    duracao_segundos,
                 ),
             )
             viagem_id = cursor.lastrowid
@@ -897,14 +1066,17 @@ class ExpedicoesCog(commands.Cog):
                     (npc["id"], servidor_id),
                 )
 
-        return "iniciada", viagem_id, termina_em, custo, chance
+        return "iniciada", viagem_id, numero_viagem, termina_em, custo, chance
 
     async def concluir_viagem(self, viagem_id: int) -> None:
         with conectar_banco() as banco:
             banco.row_factory = sqlite3.Row
             banco.execute("BEGIN IMMEDIATE")
             viagem = banco.execute(
-                "SELECT * FROM expedicao_viagens WHERE id = ? AND status = 'ativa'",
+                """
+                SELECT * FROM expedicao_viagens
+                WHERE id = ? AND status = 'ativa' AND manual_pendente = 0
+                """,
                 (viagem_id,),
             ).fetchone()
             if viagem is None:
@@ -1008,7 +1180,7 @@ class ExpedicoesCog(commands.Cog):
 
         resultado = "Objetivo concluído" if sucesso else "A equipe não conseguiu concluir o objetivo"
         embed = discord.Embed(
-            title=f"Relatório da expedição #{viagem_id}: {viagem['objetivo_nome']}",
+            title=f"Relatório da expedição #{viagem['numero']}: {viagem['objetivo_nome']}",
             description=f"<@{viagem['contratante_id']}> · **{resultado}**",
             color=discord.Color.green() if sucesso else discord.Color.red(),
         )
@@ -1071,7 +1243,10 @@ class ExpedicoesCog(commands.Cog):
                 "`!expedicao remover <número>` · remover objetivo\n"
                 "`!expedicao npc adicionar <tier> <poder> <sorte> <exploração> <nome>` · "
                 "cadastrar NPC\n"
-                "`!expedicao npc remover <nome>` · remover NPC"
+                "`!expedicao npc remover <nome>` · remover NPC\n"
+                "`!expedicao pendentes` · listar cobranças manuais aguardando moderação\n"
+                "`!expedicao aprovar <id>` · iniciar após cobrar manualmente\n"
+                "`!expedicao rejeitar <id>` · cancelar uma solicitação pendente"
             ),
             inline=False,
         )
@@ -1449,6 +1624,126 @@ class ExpedicoesCog(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @expedicao.command(name="pendentes")
+    async def listar_cobrancas_pendentes(self, ctx: commands.Context) -> None:
+        if not await self.exigir_moderacao(ctx):
+            return
+        with conectar_banco() as banco:
+            pendentes = banco.execute(
+                """
+                SELECT numero, contratante_id, objetivo_nome, custo
+                FROM expedicao_viagens
+                WHERE servidor_id = ? AND status = 'ativa' AND manual_pendente = 1
+                ORDER BY id
+                """,
+                (ctx.guild.id,),
+            ).fetchall()
+        if not pendentes:
+            await ctx.reply("Não há cobranças manuais aguardando aprovação.")
+            return
+        moeda = obter_nome_moeda(ctx.guild.id)
+        linhas = [
+            f"**#{viagem_id} · {objetivo}** — <@{contratante_id}> · "
+            f"cobrar **{custo} {moeda}** e então usar "
+            f"`!expedicao aprovar {viagem_id}`."
+            for viagem_id, contratante_id, objetivo, custo in pendentes
+        ]
+        await ctx.send(
+            embed=discord.Embed(
+                title="Cobranças manuais pendentes",
+                description="\n".join(linhas)[:4000],
+                color=discord.Color.orange(),
+            ),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @expedicao.command(name="aprovar")
+    async def aprovar_cobranca_manual(
+        self,
+        ctx: commands.Context,
+        viagem_id: int,
+    ) -> None:
+        if not await self.exigir_moderacao(ctx):
+            return
+        with conectar_banco() as banco:
+            banco.execute("BEGIN IMMEDIATE")
+            viagem = banco.execute(
+                """
+                SELECT duracao_segundos FROM expedicao_viagens
+                WHERE numero = ? AND servidor_id = ? AND status = 'ativa'
+                    AND manual_pendente = 1
+                """,
+                (viagem_id, ctx.guild.id),
+            ).fetchone()
+            if viagem is None:
+                banco.rollback()
+                await ctx.reply(
+                    "Não encontrei uma expedição manual pendente com esse ID."
+                )
+                return
+            termina_em = (
+                datetime.now(timezone.utc).timestamp() + int(viagem[0])
+            )
+            cursor = banco.execute(
+                """
+                UPDATE expedicao_viagens
+                SET manual_pendente = 0, termina_em = ?
+                WHERE numero = ? AND servidor_id = ? AND status = 'ativa'
+                    AND manual_pendente = 1
+                """,
+                (termina_em, viagem_id, ctx.guild.id),
+            )
+            if cursor.rowcount != 1:
+                banco.rollback()
+                await ctx.reply(
+                    "A expedição deixou de estar pendente; confira a lista novamente."
+                )
+                return
+        logger.info(
+            "Expedição %s aprovada manualmente pelo moderador %s no servidor %s.",
+            viagem_id,
+            ctx.author.id,
+            ctx.guild.id,
+        )
+        await ctx.reply(
+            f"Expedição **#{viagem_id}** aprovada. A duração começou agora; "
+            "confirme que a cobrança manual foi realizada."
+        )
+
+    @expedicao.command(name="rejeitar")
+    async def rejeitar_cobranca_manual(
+        self,
+        ctx: commands.Context,
+        viagem_id: int,
+    ) -> None:
+        if not await self.exigir_moderacao(ctx):
+            return
+        with conectar_banco() as banco:
+            pendente = banco.execute(
+                """
+                SELECT id FROM expedicao_viagens
+                WHERE numero = ? AND servidor_id = ? AND status = 'ativa'
+                    AND manual_pendente = 1
+                """,
+                (viagem_id, ctx.guild.id),
+            ).fetchone()
+        if pendente is None:
+            await ctx.reply(
+                "Não encontrei uma expedição manual pendente com esse ID."
+            )
+            return
+        self.cancelar_viagem_sem_cobranca(pendente[0])
+        logger.info(
+            "Expedição %s rejeitada pelo moderador %s no servidor %s.",
+            viagem_id,
+            ctx.author.id,
+            ctx.guild.id,
+        )
+        await ctx.reply(
+            f"Expedição **#{viagem_id}** rejeitada e exploradores liberados. "
+            "Se a cobrança já foi feita, devolva o valor manualmente."
+        )
+
     @expedicao.command(name="status")
     async def status(self, ctx: commands.Context) -> None:
         if ctx.guild is None:
@@ -1457,7 +1752,8 @@ class ExpedicoesCog(commands.Cog):
         with conectar_banco() as banco:
             viagem = banco.execute(
                 """
-                SELECT id, objetivo_nome, termina_em, custo, chance_sucesso
+                SELECT numero, objetivo_nome, termina_em, custo, chance_sucesso,
+                    manual_pendente
                 FROM expedicao_viagens
                 WHERE servidor_id = ? AND contratante_id = ? AND status = 'ativa'
                 """,
@@ -1465,6 +1761,13 @@ class ExpedicoesCog(commands.Cog):
             ).fetchone()
         if viagem is None:
             await ctx.reply("Você não tem expedições em andamento.")
+            return
+        if viagem[5]:
+            await ctx.reply(
+                f"Expedição **#{viagem[0]} · {viagem[1]}** aguardando a moderação. "
+                f"Custo: {viagem[3]} {obter_nome_moeda(ctx.guild.id)}. "
+                "A duração começa após a cobrança manual e aprovação."
+            )
             return
         await ctx.reply(
             f"Expedição **#{viagem[0]} · {viagem[1]}**: retorno <t:{int(viagem[2])}:R>. "
