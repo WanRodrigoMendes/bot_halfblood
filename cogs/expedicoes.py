@@ -19,7 +19,6 @@ MAXIMO_DURACAO_MINUTOS = 10080
 MAXIMO_NPCS_POR_EQUIPE = 3
 TIERS = ("Pacífico", "Fácil", "Médio", "Difícil", "Inferno")
 PODER_PARA_100_POR_TIER = (2, 4, 6, 8, 10)
-CUSTO_POR_PONTO = 5
 MOEDA_POR_SERVIDOR = {
     958843879313014794: "dracmas",
     941036256526209183: "denários",
@@ -413,15 +412,6 @@ def inicializar_banco() -> None:
             ON expedicao_objetivos (servidor_id, numero)
             """
         )
-        banco.execute(
-            """
-            UPDATE expedicao_mercenarios
-            SET custo = (combate + sorte + exploracao) * ?
-            """,
-            (CUSTO_POR_PONTO,),
-        )
-
-
 def garantir_catalogo(servidor_id: int) -> None:
     with conectar_banco() as banco:
         banco.execute(
@@ -1241,8 +1231,12 @@ class ExpedicoesCog(commands.Cog):
                 "`!expedicao criar <tier> <minutos> \"<recompensas>\" <nome>` · "
                 "cadastrar objetivo\n"
                 "`!expedicao remover <número>` · remover objetivo\n"
-                "`!expedicao npc adicionar <tier> <poder> <sorte> <exploração> <nome>` · "
+                "`!expedicao npc adicionar <tier> <poder> <sorte> <exploração> "
+                "<custo> <nome>` · "
                 "cadastrar NPC\n"
+                "`!expedicao npc editar <custo> <nome>` · editar o custo de um NPC\n"
+                "`!expedicao npc editar_status <tier> <poder> <sorte> "
+                "<exploração> <nome>` · editar os atributos de um NPC\n"
                 "`!expedicao npc remover <nome>` · remover NPC\n"
                 "`!expedicao pendentes` · listar cobranças manuais aguardando moderação\n"
                 "`!expedicao aprovar <id>` · iniciar após cobrar manualmente\n"
@@ -1309,6 +1303,7 @@ class ExpedicoesCog(commands.Cog):
         poder: int,
         sorte: int,
         exploracao: int,
+        custo: int,
         *,
         nome: str,
     ) -> None:
@@ -1323,13 +1318,14 @@ class ExpedicoesCog(commands.Cog):
         if any(not 1 <= atributo <= 6 for atributo in (poder, sorte, exploracao)):
             await ctx.reply("Poder, sorte e exploração precisam ficar entre 1 e 6.")
             return
+        if custo < 0:
+            await ctx.reply("O custo do NPC não pode ser negativo.")
+            return
         nome = nome.strip().strip('"')
         if not nome or len(nome) > 80:
             await ctx.reply("O nome do NPC precisa ter entre 1 e 80 caracteres.")
             return
-
         _, nome_tier = resultado_tier
-        custo = (poder + sorte + exploracao) * CUSTO_POR_PONTO
         duplicado = False
         try:
             with conectar_banco() as banco:
@@ -1387,6 +1383,105 @@ class ExpedicoesCog(commands.Cog):
         await ctx.reply(
             f"NPC **{nome}** {resposta} no tier **{nome_tier}**, com o custo de "
             f"**{custo} {obter_nome_moeda(ctx.guild.id)}**."
+        )
+
+    @listar_npcs.command(name="editar", aliases=["editar_valor", "editar-valor"])
+    async def editar_custo_npc(
+        self,
+        ctx: commands.Context,
+        custo: int,
+        *,
+        nome: str,
+    ) -> None:
+        if not await self.exigir_moderacao(ctx):
+            return
+        if custo < 0:
+            await ctx.reply("O custo do NPC não pode ser negativo.")
+            return
+        nome = nome.strip().strip('"')
+        with conectar_banco() as banco:
+            npc = banco.execute(
+                """
+                SELECT id, status, removido FROM expedicao_mercenarios
+                WHERE servidor_id = ? AND nome = ?
+                """,
+                (ctx.guild.id, nome),
+            ).fetchone()
+            if npc is None or npc[2]:
+                await ctx.reply("Não encontrei esse NPC neste servidor.")
+                return
+            if npc[1] == "em_expedicao":
+                await ctx.reply(
+                    "Esse NPC está em uma expedição e não pode ser editado agora."
+                )
+                return
+            banco.execute(
+                "UPDATE expedicao_mercenarios SET custo = ? WHERE id = ?",
+                (custo, npc[0]),
+            )
+        await ctx.reply(
+            f"Custo do NPC **{nome}** atualizado para "
+            f"**{custo} {obter_nome_moeda(ctx.guild.id)}**."
+        )
+
+    @listar_npcs.command(
+        name="editar_status",
+        aliases=["editar-status", "editar_atributos", "editar-atributos"],
+    )
+    async def editar_status_npc(
+        self,
+        ctx: commands.Context,
+        tier: str,
+        poder: int,
+        sorte: int,
+        exploracao: int,
+        *,
+        nome: str,
+    ) -> None:
+        if not await self.exigir_moderacao(ctx):
+            return
+        resultado_tier = obter_tier(tier)
+        if resultado_tier is None:
+            await ctx.reply(
+                "Tier inválido. Use: Pacífico, Fácil, Médio, Difícil ou Inferno."
+            )
+            return
+        if any(not 1 <= atributo <= 6 for atributo in (poder, sorte, exploracao)):
+            await ctx.reply("Poder, sorte e exploração precisam ficar entre 1 e 6.")
+            return
+        nome = nome.strip().strip('"')
+        if not nome or len(nome) > 80:
+            await ctx.reply("O nome do NPC precisa ter entre 1 e 80 caracteres.")
+            return
+
+        _, nome_tier = resultado_tier
+        with conectar_banco() as banco:
+            npc = banco.execute(
+                """
+                SELECT id, status, removido FROM expedicao_mercenarios
+                WHERE servidor_id = ? AND nome = ?
+                """,
+                (ctx.guild.id, nome),
+            ).fetchone()
+            if npc is None or npc[2]:
+                await ctx.reply("Não encontrei esse NPC neste servidor.")
+                return
+            if npc[1] == "em_expedicao":
+                await ctx.reply(
+                    "Esse NPC está em uma expedição e não pode ser editado agora."
+                )
+                return
+            banco.execute(
+                """
+                UPDATE expedicao_mercenarios
+                SET tier = ?, combate = ?, sorte = ?, exploracao = ?
+                WHERE id = ?
+                """,
+                (nome_tier, poder, sorte, exploracao, npc[0]),
+            )
+        await ctx.reply(
+            f"Status do NPC **{nome}** atualizado: tier **{nome_tier}**, "
+            f"poder **{poder}**, sorte **{sorte}** e exploração **{exploracao}**."
         )
 
     @listar_npcs.command(name="remover")

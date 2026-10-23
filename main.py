@@ -12,7 +12,6 @@ class UtilityBot(commands.Bot):
         await self.load_extension("cogs.fazerlvl")
         await self.load_extension("cogs.help_comandos")
         await self.load_extension("cogs.jogo_apostas_moedas")
-        await self.load_extension("cogs.avaliaritem")
         await self.load_extension("cogs.materiais")
         await self.load_extension("cogs.pq")
         await self.load_extension("cogs.minerar")

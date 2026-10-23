@@ -6,10 +6,6 @@ COMMAND_DETAILS = {
         "responda à mensagem de uma ficha.",
         "-# > Aprova uma ficha no servidor grego ou romano, usando o canal, cargos e palavras-chave configurados para cada servidor.",
     ),
-    "avaliaritem": (
-        "responda à mensagem de uma ficha de itens.",
-        "-# > Calcula o valor total de bônus de uma ficha de itens com base nos materiais utilizados.",
-    ),
     "materiais": (
         "[nome] (ou !material [nome])",
         "-# > Pesquisa os bônus de um material ou lista os materiais e ligas disponíveis.",

@@ -1,7 +1,8 @@
+import unicodedata
+
 import discord
 from discord.ext import commands
 
-from sistemas.forjas.interface import normalizar
 from sistemas.forjas.materiais import MATERIAIS, MISTURAS
 
 ITENS_POR_PAGINA = 8
@@ -27,6 +28,15 @@ NOMES_EFEITOS = {
     "canalizacao_elemental": "Canalização elemental",
     "inoxidavel": "Inoxidável",
 }
+
+
+def normalizar(texto: str) -> str:
+    texto = unicodedata.normalize("NFD", texto.casefold())
+    return "".join(
+        caractere
+        for caractere in texto
+        if unicodedata.category(caractere) != "Mn"
+    )
 
 
 def listar_materiais() -> list[tuple[str, dict]]:
