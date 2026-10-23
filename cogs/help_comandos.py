@@ -32,6 +32,20 @@ COMMAND_DETAILS = {
         "Mods/ADMs também podem adicionar ou remover NPCs por servidor. "
         "Poder afeta sucesso e baixas, sorte afeta loot, exploração reduz o tempo e NPCs mortos não retornam.",
     ),
+    "raspadinha": (
+        "[criar <preço> <casas> <nome> | premio <id> <valor> <qtd> <tipo> <nome> | quantidade <id> <id_prêmio> <qtd> | premios | jogar | atualizar | arquivar | remover]",
+        "-# > Cria tabuleiros quadrados persistentes de 1 a 100 casas (ex.: 25 = 5×5, "
+        "36 = 6×6). A quantidade de cada prêmio define quantas unidades há na cartela; "
+        "Classificações: normal, médio, grande, épico e vazio; somente prêmio grande pausa a cartela. "
+        "Todas as quantidades devem somar o tamanho do tabuleiro. "
+        "As casas são sorteadas sem reposição. Prêmio grande pausa a cartela até o responsável "
+        "aumentar o preço. Ex.: `!raspadinha criar 50 25 Nome`; "
+        "`!raspadinha premio 1 500 1 grande Prêmio`; "
+        "`!raspadinha premio 1 50 1 normal Prêmio normal`; "
+        "`!raspadinha premio 1 100 1 médio Prêmio médio`; "
+        "`!raspadinha premio 1 250 1 épico Prêmio épico`; "
+        "`!raspadinha premio 1 0 22 vazio Sem prêmio`.",
+    ),
     # "investir": (
     #     "<analisar | simular>",
     #     "-# > Consulta cotações indicativas e apresenta uma divisão educativa por perfil; também permite comprar e vender ETFs com saldo fictício.",
