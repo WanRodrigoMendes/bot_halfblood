@@ -450,6 +450,10 @@ def calcular_chance_sucesso(poder_total: int, tier: int) -> int:
     return max(5, min(100, poder_total * 100 // poder_para_100))
 
 
+def calcular_sucesso_viagem(sucesso_sorteado: bool, sobreviventes: int) -> bool:
+    return sucesso_sorteado and sobreviventes > 0
+
+
 def calcular_custo(equipe: list[tuple]) -> int:
     return sum(int(npc["custo"]) for npc in equipe)
 
@@ -1104,6 +1108,7 @@ class ExpedicoesCog(commands.Cog):
                     baixas_ids.add(npc["mercenario_id"])
                 (baixas if morreu else sobreviventes).append(npc["nome"])
 
+            sucesso = calcular_sucesso_viagem(sucesso, len(sobreviventes))
             sorte_total = sum(npc["sorte"] for npc in equipe)
             achados: dict[str, int] = {}
             if sucesso:
