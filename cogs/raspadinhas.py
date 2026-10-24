@@ -471,6 +471,7 @@ class RaspadinhasCog(commands.Cog):
         criador_id: int,
         raspadinha_id: int,
         nome: str,
+        tipo_premio: str,
         canal_fallback: discord.abc.Messageable | None,
     ) -> bool:
         canal = self.bot.get_channel(canal_id) if canal_id is not None else None
@@ -494,7 +495,7 @@ class RaspadinhasCog(commands.Cog):
             return False
         try:
             await canal.send(
-                f"<@{criador_id}> o prêmio grande saiu na raspadinha **{nome}**; ela foi pausada. Atualize o preço com "
+                f"<@{criador_id}> o prêmio {tipo_premio} saiu na raspadinha **{nome}**; ela foi pausada. Atualize o preço com "
                 f"`!raspadinha atualizar {raspadinha_id} <novo_preço>` para reativá-la.",
                 allowed_mentions=discord.AllowedMentions(users=True),
             )
@@ -636,7 +637,7 @@ class RaspadinhasCog(commands.Cog):
                 weights=[int(item["restantes"]) for item in premios],
                 k=1,
             )[0]
-            pausada = premio["tipo"] == "grande"
+            pausada = premio["tipo"] in {"grande", "épico"}
             try:
                 with conectar_banco() as banco:
                     banco.execute("BEGIN IMMEDIATE")
@@ -722,6 +723,7 @@ class RaspadinhasCog(commands.Cog):
                     int(cartela["criador_id"]),
                     raspadinha_id,
                     str(cartela["nome"]),
+                    str(premio["tipo"]),
                     canal,
                 )
                 if not notificado:
